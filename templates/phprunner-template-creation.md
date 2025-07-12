@@ -322,7 +322,7 @@ server {
 
 &nbsp;   location / {
 
-&nbsp;       try\_files \\$uri \\$uri/ /index.php?\\$query\_string;
+&nbsp;       try\_files \\$uri \\$uri/ =404;
 
 &nbsp;   }
 

@@ -65,14 +65,27 @@ get_yes_no() {
     local title="$1"
     local message="$2"
     local default="$3"
-    
-    if [ "$default" = "yes" ]; then
-        whiptail --title "$title" --yesno "$message" 10 60
+
+    # Both branches used to run the same command, so --defaultno was never
+    # applied and prompts meant to default to No defaulted to Yes.
+    if [ "$default" = "no" ] || [ "$default" = "n" ]; then
+        whiptail --title "$title" --defaultno --yesno "$message" 10 60
     else
         whiptail --title "$title" --yesno "$message" 10 60
     fi
-    
+
     return $?
+}
+
+# Function to show whiptail password box (input is masked)
+get_password() {
+    local title="$1"
+    local prompt="$2"
+    local result
+
+    result=$(whiptail --title "$title" --passwordbox "$prompt" 10 60 3>&1 1>&2 2>&3)
+
+    echo "$result"
 }
 
 # Function to show whiptail menu
@@ -732,13 +745,13 @@ main() {
     # Container root password setup (always required)
     print_color $CYAN "\nRoot Password Configuration:"
     while true; do
-        ROOT_PASSWORD=$(get_input "Root Password" "Enter root password for container:" "")
+        ROOT_PASSWORD=$(get_password "Root Password" "Enter root password for container:")
         if [ -z "$ROOT_PASSWORD" ]; then
             show_message "Error" "Root password cannot be empty."
             continue
         fi
-        
-        ROOT_PASSWORD_CONFIRM=$(get_input "Confirm Password" "Confirm root password:" "")
+
+        ROOT_PASSWORD_CONFIRM=$(get_password "Confirm Password" "Confirm root password:")
         
         if [ "$ROOT_PASSWORD" = "$ROOT_PASSWORD_CONFIRM" ]; then
             if [ ${#ROOT_PASSWORD} -lt 6 ]; then

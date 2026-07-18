@@ -806,6 +806,7 @@ create_container() {
         --net0 $NET_CONFIG \
         ${NAMESERVER:+--nameserver "$NAMESERVER"} \
         --unprivileged 1 \
+        --features nesting=1 \
         --onboot 1 \
         --password "$ROOT_PASSWORD"; then
         print_color $GREEN "✅ Container created successfully!"

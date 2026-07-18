@@ -1118,6 +1118,12 @@ opcache.memory_consumption = 64
 opcache.interned_strings_buffer = 16
 opcache.max_accelerated_files = 4000
 PHPEOF
+
+    # date.timezone must be set explicitly. PHP falls back to UTC when it is
+    # unset, regardless of the system timezone, so setting /etc/localtime alone
+    # is not enough. Appended rather than written inside the heredoc above
+    # because that heredoc is quoted and would not expand $TIMEZONE.
+    echo "date.timezone = $TIMEZONE" >> /etc/php/$PHP_VERSION/apache2/conf.d/99-phprunner.ini
 else
     cat > /etc/php/$PHP_VERSION/fpm/conf.d/99-phprunner.ini << 'PHPEOF'
 ; PHPRunner Production optimizations
@@ -1142,6 +1148,9 @@ opcache.max_accelerated_files = 4000
 pm.status_path = /status
 ping.path = /ping
 PHPEOF
+
+    # See the note above: date.timezone must be set explicitly or PHP uses UTC.
+    echo "date.timezone = $TIMEZONE" >> /etc/php/$PHP_VERSION/fpm/conf.d/99-phprunner.ini
 fi
 
 echo '🌐 Configuring web server...'
@@ -1189,8 +1198,11 @@ APACHEEOF
 
     a2ensite 000-default
     systemctl enable apache2
-    echo "🔄 Starting Apache2..."
-    systemctl start apache2
+    # restart, not start: the package postinst already started Apache before the
+    # PHP ini above was written, and 'start' on a running unit is a no-op, so the
+    # new PHP settings would never be loaded by mod_php.
+    echo "🔄 Restarting Apache2 to apply configuration..."
+    systemctl restart apache2
 
 else
     # Configure Nginx site
@@ -1305,8 +1317,11 @@ NGINXEOF
 
     systemctl enable php$PHP_VERSION-fpm
     systemctl enable nginx
-    echo "🔄 Starting PHP-FPM..."
-    systemctl start php$PHP_VERSION-fpm
+    # restart, not start: PHP-FPM was already started by its package postinst
+    # before the PHP ini above was written, and 'start' on a running unit is a
+    # no-op, so the new settings would never be loaded.
+    echo "🔄 Restarting PHP-FPM to apply configuration..."
+    systemctl restart php$PHP_VERSION-fpm
     if ! systemctl is-active php$PHP_VERSION-fpm; then
         echo "❌ PHP-FPM is not running! Check PHP-FPM installation."
         exit 1

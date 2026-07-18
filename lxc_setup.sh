@@ -4,7 +4,7 @@
 # Creates ready-to-use containers for PHPRunner applications
 # Optimized for Ubuntu LTS systems only
 #
-# GitHub: https://github.com/wdbenj/proxmox-phprunner-lxc
+# GitHub: https://github.com/billybenj/Proxmox_PHPRunner_LXC
 # License: MIT
 # Author: Billy Benjamin
 # Version: 1.0.0

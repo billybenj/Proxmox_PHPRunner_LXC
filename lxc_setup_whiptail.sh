@@ -429,13 +429,25 @@ main() {
 
     # Container ID with existence check
     while true; do
-        CONTAINER_ID=$(get_input "Container ID" "Enter container ID:" "999")
-        
+        CONTAINER_ID=$(get_input "Container ID" "Enter container ID (100 or higher, must be unused):" "")
+
+        # No default on purpose: the user must consciously choose an ID so we can
+        # never propose one that belongs to a live container/VM.
         if [ -z "$CONTAINER_ID" ]; then
             show_message "Error" "Container ID cannot be empty."
             continue
         fi
-        
+
+        if ! [[ "$CONTAINER_ID" =~ ^[0-9]+$ ]]; then
+            show_message "Error" "Container ID must be a number (e.g. 210)."
+            continue
+        fi
+
+        if [ "$CONTAINER_ID" -lt 100 ]; then
+            show_message "Error" "Container ID must be 100 or higher (Proxmox reserves 1-99)."
+            continue
+        fi
+
         if check_id_exists $CONTAINER_ID; then
             break
         else

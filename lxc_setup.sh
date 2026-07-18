@@ -372,13 +372,79 @@ download_ubuntu_lts_template() {
     fi
 }
 
+# Function to list bridges / SDN VNets available on this host and pick one
+select_bridge() {
+    print_color $CYAN "📋 Scanning for available bridges and SDN VNets..."
+
+    local bridges=()
+    local descs=()
+
+    # Real bridges on the host. SDN VNets show up here too, because Proxmox
+    # materialises each VNet as a bridge once the SDN config is applied.
+    while IFS= read -r br; do
+        [ -z "$br" ] && continue
+        bridges+=("$br")
+        descs+=("")
+    done < <(ip -o link show type bridge 2>/dev/null | awk -F': ' '{print $2}' | sed 's/@.*//' | sort -u)
+
+    # Annotate anything that is an SDN VNet, and show the VLAN tag it applies.
+    if [ -f /etc/pve/sdn/vnets.cfg ]; then
+        local vnet=""
+        while IFS= read -r line; do
+            if [[ $line =~ ^vnet:[[:space:]]*([^[:space:]]+) ]]; then
+                vnet="${BASH_REMATCH[1]}"
+                for i in "${!bridges[@]}"; do
+                    [ "${bridges[i]}" = "$vnet" ] && descs[i]="SDN VNet"
+                done
+            elif [[ $line =~ ^[[:space:]]+tag[[:space:]]+([0-9]+) ]] && [ -n "$vnet" ]; then
+                for i in "${!bridges[@]}"; do
+                    [ "${bridges[i]}" = "$vnet" ] && descs[i]="SDN VNet, VLAN tag ${BASH_REMATCH[1]}"
+                done
+                vnet=""
+            fi
+        done < /etc/pve/sdn/vnets.cfg
+    fi
+
+    if [ ${#bridges[@]} -eq 0 ]; then
+        print_color $RED "❌ No bridges detected on this host!"
+        prompt_input "Enter bridge name manually" "" BRIDGE
+        if [ -z "$BRIDGE" ]; then
+            print_color $RED "A bridge is required. Exiting."
+            exit 1
+        fi
+        return
+    fi
+
+    echo
+    print_color $CYAN "Available bridges:"
+    for i in "${!bridges[@]}"; do
+        if [ -n "${descs[i]}" ]; then
+            echo "  $((i+1))) ${bridges[i]}  (${descs[i]})"
+        else
+            echo "  $((i+1))) ${bridges[i]}"
+        fi
+    done
+    echo
+
+    while true; do
+        prompt_input "Select bridge number (1-${#bridges[@]})" "" BRIDGE_CHOICE
+        if [[ "$BRIDGE_CHOICE" =~ ^[0-9]+$ ]] && [ "$BRIDGE_CHOICE" -ge 1 ] && [ "$BRIDGE_CHOICE" -le ${#bridges[@]} ]; then
+            BRIDGE="${bridges[$((BRIDGE_CHOICE-1))]}"
+            break
+        fi
+        print_color $RED "Invalid selection. Please choose 1-${#bridges[@]}."
+    done
+
+    print_color $GREEN "✅ Selected bridge: $BRIDGE"
+}
+
 # Main setup function
 main() {
     print_color $BLUE "==================================================="
     print_color $BLUE "   Interactive PHPRunner LXC Creator"
     print_color $BLUE "            Ubuntu LTS Only"
     print_color $BLUE "==================================================="
-    print_color $CYAN "   GitHub: https://github.com/wdbenj/proxmox-phprunner-lxc"
+    print_color $CYAN "   GitHub: https://github.com/billybenj/Proxmox_PHPRunner_LXC"
     print_color $CYAN "   Version: 1.0.0 | License: MIT"
     print_color $BLUE "==================================================="
     echo
@@ -427,6 +493,7 @@ main() {
     # Basic container settings
     prompt_input "Container hostname" "phprunner-template" HOSTNAME
     prompt_input "Memory (MB)" "1024" MEMORY
+    prompt_input "CPU cores" "2" CORES
     
     # Storage selection
     print_color $CYAN "📋 Checking available storage for containers..."
@@ -516,20 +583,30 @@ main() {
         print_color $GREEN "✅ Selected storage: $STORAGE"
     fi
     
-    prompt_input "Root filesystem size (GB)" "100" ROOTFS_SIZE
+    prompt_input "Root filesystem size (GB)" "16" ROOTFS_SIZE
     
     # Network configuration
     print_color $CYAN "\nNetwork Configuration:"
+    select_bridge
+
+    echo
     echo "1) DHCP (automatic IP)"
     echo "2) Static IP"
     prompt_input "Choose network type (1-2)" "1" NET_TYPE
-    
+
     if [ "$NET_TYPE" = "2" ]; then
-        prompt_input "Static IP (e.g., 192.168.1.100/24)" "" STATIC_IP
-        prompt_input "Gateway IP" "192.168.1.1" GATEWAY
-        NET_CONFIG="name=eth0,bridge=vmbr0,ip=$STATIC_IP,gw=$GATEWAY"
+        prompt_input "Static IP with CIDR (e.g. 10.0.30.16/24)" "" STATIC_IP
+        prompt_input "Gateway IP (e.g. 10.0.30.1)" "" GATEWAY
+        NET_CONFIG="name=eth0,bridge=$BRIDGE,ip=$STATIC_IP,gw=$GATEWAY"
+
+        # DNS defaults to the gateway on purpose. On an isolated/DMZ VLAN the
+        # container must resolve via that VLAN's own gateway - inheriting the
+        # host's resolver points at another subnet, which an isolation rule will
+        # block, and DNS then fails silently (apt, certbot, etc).
+        prompt_input "DNS nameserver for the container" "$GATEWAY" NAMESERVER
     else
-        NET_CONFIG="name=eth0,bridge=vmbr0,ip=dhcp"
+        NET_CONFIG="name=eth0,bridge=$BRIDGE,ip=dhcp"
+        prompt_input "DNS nameserver for the container (blank = inherit host)" "" NAMESERVER
     fi
 
     # Web server selection
@@ -634,8 +711,11 @@ main() {
     echo "Container ID: $CONTAINER_ID"
     echo "Hostname: $HOSTNAME"
     echo "Memory: ${MEMORY}MB"
+    echo "CPU cores: $CORES"
     echo "Storage: $STORAGE:${ROOTFS_SIZE}GB"
+    echo "Bridge: $BRIDGE"
     echo "Network: $NET_CONFIG"
+    echo "Nameserver: ${NAMESERVER:-<inherit host>}"
     echo "Web Server: $WEB_SERVER"
     echo "PHP Version: $PHP_VERSION"
     echo "Redis: $INSTALL_REDIS"
@@ -658,7 +738,8 @@ main() {
 
 	# Set root password and enable login, add SSH Key if needed
 	if [ "$SET_ROOT_PASSWORD" = "yes" ]; then
-		echo "$ROOT_PASSWORD" | pct exec $CONTAINER_ID -- bash -c "passwd --stdin root 2>/dev/null || (echo 'root:$ROOT_PASSWORD' | chpasswd)"
+		# Piped via stdin so the password never appears in the process list.
+		printf 'root:%s\n' "$ROOT_PASSWORD" | pct exec $CONTAINER_ID -- chpasswd
 	fi
 
 	if [ -n "$SET_ROOT_SSH_KEY" ]; then
@@ -720,8 +801,10 @@ create_container() {
     if pct create $CONTAINER_ID $SELECTED_TEMPLATE \
         --hostname $HOSTNAME \
         --memory $MEMORY \
+        --cores $CORES \
         --rootfs $STORAGE:$ROOTFS_SIZE \
         --net0 $NET_CONFIG \
+        ${NAMESERVER:+--nameserver "$NAMESERVER"} \
         --unprivileged 1 \
         --onboot 1 \
         --password "$ROOT_PASSWORD"; then
@@ -1369,10 +1452,8 @@ create_web_content() {
         
         <h2>Test Links</h2>
         <ul>
-            <li><a href=\"info.php\">PHP Information</a></li>
             <li><a href=\"test.php\">PHP Test Page</a></li>
             <li><a href=\"health.php\">System Health Check</a></li>
-            <li><a href=\"debug.php\">Debug Information</a></li>
         </ul>
         
         <h2>Installed Components</h2>
@@ -1416,12 +1497,12 @@ echo json_encode([
 ?>
 PHPEOF
 
-        # Create info.php
-        cat > /var/www/html/info.php << 'PHPEOF'
-<?php phpinfo(); ?>
-PHPEOF
+        # NOTE: info.php (phpinfo) is deliberately NOT created. It leaks the full
+        # server configuration - paths, extensions, environment - and nothing in
+        # this script uses it. Run 'php -i' on the container if you need it.
 
-        # Create debug.php
+        # Create debug.php - used by the PHP processing self-test in
+        # finalize_setup(), then deleted there so it is not left web-accessible.
         cat > /var/www/html/debug.php << 'PHPEOF'
 <?php
 error_reporting(E_ALL);
@@ -1548,6 +1629,11 @@ finalize_setup() {
         else
             echo '❌ PHP processing: FAILED'
         fi
+
+        # Remove the diagnostic pages now the self-test has run. They expose
+        # server internals and are of no use once the container is serving.
+        rm -f /var/www/html/debug.php /var/www/html/php-test.php /var/www/html/info.php
+        echo 'Removed diagnostic pages (debug.php, php-test.php)'
     "
 
     print_color $GREEN "\n✅ Container setup complete!"

@@ -1598,22 +1598,18 @@ Options -Indexes
     Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains" env=HTTPS
 </IfModule>
 
-# Prevent script execution in uploads (if uploads dir exists)
-<IfModule mod_php7.c>
-    <Directory "/var/www/html/uploads">
-        php_flag engine off
-    </Directory>
-</IfModule>
-<IfModule mod_php8.c>
-    <Directory "/var/www/html/uploads">
-        php_flag engine off
-    </Directory>
-</IfModule>
-
-# Disable .htaccess override for certain folders
-<DirectoryMatch "/(config|logs|cache|temp|vendor)/">
-    AllowOverride None
-</DirectoryMatch>
+# NOTE: <Directory>, <DirectoryMatch> and AllowOverride are server/vhost-only
+# directives. Apache aborts every request with a 500 ("<X> not allowed here")
+# if it finds them in a .htaccess, so they must never be added here.
+#
+# Those protections already live in the vhost, which denies /config, /logs,
+# /cache, /temp and /vendor as well as dotfiles and .htaccess itself.
+#
+# To stop PHP executing inside an uploads directory, put a .htaccess *in that
+# directory* containing:
+#     <FilesMatch "\.php$">
+#         Require all denied
+#     </FilesMatch>
 HTACCESS
 '
     fi

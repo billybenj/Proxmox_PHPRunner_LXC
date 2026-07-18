@@ -906,31 +906,49 @@ echo '⏰ Setting up timezone...'
 ln -fs /usr/share/zoneinfo/$TIMEZONE /etc/localtime
 DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -f noninteractive tzdata
 
-echo '📋 Adding PHP repository...'
-# Add PHP repo with error handling based on web server selection
+echo '📋 Adding repositories...'
+
+# Web server PPA. Optional - if it is unavailable the Ubuntu archive version
+# is perfectly usable, so a failure here is only a warning.
 if [ "$WEB_SERVER" = "apache2" ]; then
-    echo "🌐 Adding Apache2 and PHP repositories..."
-    # Add Apache2 PPA first
+    echo "🌐 Adding Apache2 repository..."
     if ! add-apt-repository ppa:ondrej/apache2 -y; then
-        echo "⚠️  Failed to add Apache2 repository, continuing..."
-    fi
-    # Add PHP PPA
-    if ! add-apt-repository ppa:ondrej/php -y; then
-        echo "⚠️  Failed to add PHP repository, trying alternative..."
-        curl -fsSL https://packages.sury.org/php/apt.gpg | gpg --dearmor -o /usr/share/keyrings/sury-php.gpg
-        echo "deb [signed-by=/usr/share/keyrings/sury-php.gpg] https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/sury-php.list
+        echo "⚠️  Could not add ppa:ondrej/apache2 - using the Ubuntu archive version instead."
     fi
 else
-    echo "🌐 Adding Nginx and PHP repositories..."
-    # Add Nginx PPA first
+    echo "🌐 Adding Nginx repository..."
     if ! add-apt-repository ppa:ondrej/nginx -y; then
-        echo "⚠️  Failed to add Nginx repository, continuing..."
+        echo "⚠️  Could not add ppa:ondrej/nginx - using the Ubuntu archive version instead."
     fi
-    # Add PHP PPA
-    if ! add-apt-repository ppa:ondrej/php -y; then
-        echo "⚠️  Failed to add PHP repository, trying alternative..."
-        curl -fsSL https://packages.sury.org/php/apt.gpg | gpg --dearmor -o /usr/share/keyrings/sury-php.gpg
-        echo "deb [signed-by=/usr/share/keyrings/sury-php.gpg] https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/sury-php.list
+fi
+
+# PHP comes from ppa:ondrej/php.
+#
+# There is deliberately NO packages.sury.org fallback here. Sury is a DEBIAN
+# archive, so on Ubuntu "deb https://packages.sury.org/php/ $(lsb_release -sc)"
+# resolves to an Ubuntu codename that does not exist in that archive. It writes
+# an apt source that 404s, which converts a clear "the PPA is unavailable"
+# failure into a confusing one several steps later.
+#
+# If the PPA is unavailable we check whether the requested PHP version happens
+# to be in the Ubuntu archive, and otherwise stop with an actionable message.
+echo "🐘 Adding PHP repository..."
+if ! add-apt-repository ppa:ondrej/php -y; then
+    echo "⚠️  Could not add ppa:ondrej/php."
+    echo "    This normally means the PPA does not build for this Ubuntu release yet."
+    apt-get update -y || true
+
+    if apt-cache show "php$PHP_VERSION-cli" >/dev/null 2>&1; then
+        echo "✅ PHP $PHP_VERSION is available from the Ubuntu archive - continuing without the PPA."
+    else
+        echo "❌ PHP $PHP_VERSION is not in the Ubuntu archive either, so this build cannot continue."
+        echo
+        echo "   Options:"
+        echo "     - Rebuild on an Ubuntu LTS that the PPA supports (24.04 is a safe choice)"
+        echo "     - Or select the PHP version this Ubuntu release ships by default"
+        echo
+        echo "   Supported releases: https://launchpad.net/~ondrej/+archive/ubuntu/php"
+        exit 1
     fi
 fi
 
@@ -1356,7 +1374,7 @@ EOF
     # Transfer variables and run configuration
     pct push $CONTAINER_ID /tmp/container_config.sh /tmp/config.sh
     pct exec $CONTAINER_ID -- chmod +x /tmp/config.sh
-    pct exec $CONTAINER_ID -- bash -c \
+    if ! pct exec $CONTAINER_ID -- bash -c \
         "export PHP_VERSION='$PHP_VERSION'; \
          export WEB_SERVER='$WEB_SERVER'; \
          export INSTALL_MYSQL='$INSTALL_MYSQL'; \
@@ -1364,7 +1382,13 @@ EOF
          export INSTALL_COMPOSER='$INSTALL_COMPOSER'; \
          export SETUP_SSL='$SETUP_SSL'; \
          export TIMEZONE='$TIMEZONE'; \
-         /tmp/config.sh"
+         /tmp/config.sh"; then
+        print_color $RED "\n❌ Container configuration failed - see the output above for the cause."
+        print_color $YELLOW "Container $CONTAINER_ID has been left in place so you can inspect it:"
+        echo "  pct enter $CONTAINER_ID"
+        echo "  pct destroy $CONTAINER_ID   # once you are done with it"
+        exit 1
+    fi
 
     print_color $GREEN "✅ Container configuration complete!"
 
